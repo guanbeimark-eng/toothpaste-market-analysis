@@ -14,10 +14,10 @@ st.set_page_config(page_title="亚马逊全维分析 (稳定增强版)", layout=
 st.title("🌍 亚马逊全维分析系统（稳定增强版）")
 st.markdown("""
 **本版强化点：**
-1. ✅ **静默错误修复**：数值解析失败不再默默变 0，而是变 NaN，并给出【解析率诊断】提醒你修正映射。
-2. ✅ **评分强校验**：评分必须符合 0–5 星分布，否则自动判定“列选错”（常见：把评论数/评分数当评分）。
-3. ✅ **国家/供应链分析**：自动识别卖家国家/所属地，并归一化统计。
-4. ✅ **PRODUCT 模块升级为产品开发分析**：新增 SKU 结构、功效&技术路线、价格锚点、内容密度、成熟度评分、决策清单。
+1. ✅ **API 兼容性修复**：修复了 `groupby().mean(skipna=True)` 在新版 pandas 报错的问题。
+2. ✅ **静默错误修复**：数值解析失败不再默默变 0，而是变 NaN，并给出诊断提醒。
+3. ✅ **评分强校验**：防止误把评论数当评分。
+4. ✅ **供应链分析**：自动识别卖家国家分布。
 """)
 
 # --- 通用清洗函数：数值（失败=NaN，不吞错）---
@@ -459,7 +459,8 @@ def render_product_dashboard(df):
                 st.plotly_chart(fig, use_container_width=True)
 
             with c2:
-                price_by_country = data.groupby("Origin", dropna=False)["clean_price"].mean(skipna=True).reset_index()
+                # 修复点 1：移除 skipna=True
+                price_by_country = data.groupby("Origin", dropna=False)["clean_price"].mean().reset_index()
                 fig2 = px.bar(price_by_country, x="Origin", y="clean_price",
                               title="不同所属地卖家的平均售价（有效价格）", color="Origin")
                 st.plotly_chart(fig2, use_container_width=True)
@@ -490,7 +491,8 @@ def render_product_dashboard(df):
         with c1:
             # Pack 分布：用销量加权优先，否则用SKU计数
             if data["clean_sales"].notna().any():
-                pack_dist = data.groupby("Pack_Count")["clean_sales"].sum(skipna=True).reset_index()
+                # 修复点 2：移除 skipna=True
+                pack_dist = data.groupby("Pack_Count")["clean_sales"].sum().reset_index()
                 fig = px.bar(pack_dist, x="Pack_Count", y="clean_sales",
                              title="Pack 数分布（按销量加权）")
             else:
@@ -516,6 +518,7 @@ def render_product_dashboard(df):
         tmp = data.dropna(subset=["clean_price"]).copy()
         if len(tmp):
             tmp["Unit_Price_per_item"] = tmp["clean_price"] / tmp["Pack_Count"].replace(0, np.nan)
+            # groupby().agg 字典方式聚合不受影响，但 agg 内部函数默认 skipna=True (series行为)
             g = tmp.groupby("Is_Multipack").agg(
                 SKU数=("Title_Str", "size"),
                 均价=("clean_price", "mean"),
@@ -573,6 +576,7 @@ def render_product_dashboard(df):
         st.markdown("#### 技术叙事是否支撑溢价？（Tech vs Price）")
         tmp = data.dropna(subset=["clean_price"]).copy()
         if len(tmp) and tmp["Tech_Main"].notna().any():
+            # 这里的 groupby().mean() 不带参数，安全
             g = tmp.groupby("Tech_Main")["clean_price"].mean().dropna().sort_values(ascending=False).head(15).reset_index()
             fig = px.bar(g, x="clean_price", y="Tech_Main", orientation="h", title="不同技术主词的平均售价（有效价格）")
             st.plotly_chart(fig, use_container_width=True)

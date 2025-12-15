@@ -6,6 +6,324 @@ import plotly.graph_objects as go
 import re
 import numpy as np
 
+# =============================================================================
+# 1. 基础配置与通用函数
+# =============================================================================
+st.set_page_config(page_title="全维度亚马逊市场分析系统", layout="wide", page_icon="🧩")
+
+st.title("🧩 全维度亚马逊市场分析系统 (智能路由版)")
+st.markdown("""
+**系统已启用智能路由 (Smart Router)：**
+系统会自动根据表头特征，将工作表识别为以下三种模式之一，并匹配专属分析维度：
+1.  📦 **产品开发模式** (针对 Product/US 表)：分析规格、成分、卖点、SKU结构。
+2.  🏢 **品牌格局模式** (针对 Brands 表)：分析垄断度、价格带占位、品牌分层。
+3.  🏪 **渠道卖家模式** (针对 Sellers 表)：分析头部卖家掌控力、FBA/FBM分布。
+""")
+
+# --- 通用清洗函数 ---
+def clean_numeric(val):
+    if pd.isna(val): return 0.0
+    s = str(val).strip()
+    if s == "" or s.lower() in ["nan", "null"]: return 0.0
+    # 清理百分比、货币符号
+    s = s.replace("$", "").replace("¥", "").replace(",", "").replace(" ", "").replace("￥", "")
+    if "%" in s:
+        try: return float(s.replace("%", "")) / 100.0
+        except: pass
+    # 提取数字
+    nums = re.findall(r"\d+(?:\.\d+)?", s)
+    if not nums: return 0.0
+    # 处理区间
+    if len(nums) >= 2 and ("-" in str(val) or "to" in str(val).lower()):
+        return (float(nums[0]) + float(nums[1])) / 2.0
+    return float(nums[0])
+
+def find_col(columns, keywords):
+    """模糊查找列名"""
+    for col in columns:
+        for kw in keywords:
+            if kw.lower() in str(col).lower().replace(" ", ""): return col
+    return None
+
+# =============================================================================
+# 2. 模式识别引擎 (Router)
+# =============================================================================
+def detect_sheet_mode(df):
+    cols = [str(c).lower() for c in df.columns]
+    col_str = " ".join(cols)
+    
+    # 判定逻辑
+    if "asin" in col_str or "sku" in col_str or "标题" in col_str or "title" in col_str:
+        return "PRODUCT"
+    elif "seller" in col_str or "卖家" in col_str:
+        return "SELLER"
+    elif ("brand" in col_str or "品牌" in col_str) and ("share" in col_str or "份额" in col_str):
+        return "BRAND"
+    else:
+        return "GENERIC"
+
+# =============================================================================
+# 3. 专属分析模块 A: 产品开发模式 (Product Mode)
+#    - 维度：SKU架构、成分技术、产品形态
+# =============================================================================
+def render_product_dashboard(df):
+    st.info("检测到 [产品明细数据]，已加载 **产品开发决策面板 (9大维度)**")
+    
+    # --- 1. 字段映射 ---
+    all_cols = df.columns.tolist()
+    col_map = {
+        'title': find_col(all_cols, ['title', '标题', 'name']),
+        'price': find_col(all_cols, ['price', '价格', '售价']),
+        'sales': find_col(all_cols, ['sales', '销量', 'sold']),
+        'rating': find_col(all_cols, ['rating', '评分', 'stars']),
+        'brand': find_col(all_cols, ['brand', '品牌']),
+    }
+    
+    # 数据清洗
+    data = df.copy()
+    if not col_map['title']: 
+        st.error("无法分析：缺少[标题]列"); return
+
+    data['clean_price'] = data[col_map['price']].apply(clean_numeric) if col_map['price'] else 0
+    data['clean_sales'] = data[col_map['sales']].apply(clean_numeric) if col_map['sales'] else 0
+    data['clean_rating'] = data[col_map['rating']].apply(clean_numeric) if col_map['rating'] else 0
+    data['Title_Str'] = data[col_map['title']].astype(str)
+
+    # --- 2. 特征提取 (Pack/Flavor/Tech) ---
+    def extract_pack(t):
+        m = re.search(r"(pack of \d+|\d+\s?count|\d+\s?pack)", t.lower())
+        if m: 
+            nums = re.findall(r"\d+", m.group(0))
+            return int(nums[0]) if nums else 1
+        return 1
+
+    data['Pack_Count'] = data['Title_Str'].apply(extract_pack)
+    data['Unit_Price'] = data.apply(lambda x: x['clean_price']/x['Pack_Count'] if x['Pack_Count']>0 else x['clean_price'], axis=1)
+
+    # --- 3. 可视化分析 ---
+    tab1, tab2, tab3, tab4 = st.tabs(["📦 规格与形态", "💰 价格体系", "🧪 卖点分析", "✅ 开发建议"])
+    
+    with tab1:
+        st.subheader("SKU 结构分析")
+        c1, c2 = st.columns(2)
+        with c1:
+            # Pack 数分布
+            pack_dist = data.groupby('Pack_Count')['clean_sales'].sum().reset_index()
+            fig = px.pie(pack_dist, values='clean_sales', names='Pack_Count', title='销量按 Pack 数分布', hole=0.4)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("👉 决策：如果 Pack 1 占比 <50%，说明多支装是主流，需考虑组合销售。")
+        with c2:
+            # 词云替代方案 (Top Keywords)
+            st.markdown("**标题高频词 (热度分析)**")
+            text = " ".join(data['Title_Str'].tolist()).lower()
+            words = [w for w in re.split(r'\W+', text) if len(w)>3 and w not in ['toothpaste', 'with', 'pack', 'count']]
+            top_words = pd.Series(words).value_counts().head(15)
+            st.bar_chart(top_words)
+
+    with tab2:
+        st.subheader("价格锚点分析")
+        c1, c2 = st.columns(2)
+        with c1:
+            # 价格区间
+            fig = px.histogram(data[data['clean_price']>0], x='clean_price', nbins=20, title="售价区间分布 (Price Range)")
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            # 价格 vs 评分
+            fig = px.scatter(data, x='clean_price', y='clean_rating', size='clean_sales', title="价格 vs 评分 (寻找溢价空间)")
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("👉 决策：右上角稀疏区域即为【高价高满意度】蓝海机会。")
+
+    with tab3:
+        st.subheader("卖点渗透率")
+        # 简单正则检测
+        tech_kws = ['hydroxyapatite', 'nano', 'fluoride free', 'whitening', 'sensitive', 'charcoal']
+        res = []
+        for k in tech_kws:
+            cnt = data[data['Title_Str'].str.contains(k, case=False)].shape[0]
+            sales = data[data['Title_Str'].str.contains(k, case=False)]['clean_sales'].sum()
+            res.append({'Keyword': k, 'Count': cnt, 'Sales': sales})
+        
+        df_kw = pd.DataFrame(res).sort_values('Sales', ascending=False)
+        fig = px.bar(df_kw, x='Sales', y='Keyword', orientation='h', title="核心成分/功效 销量贡献")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab4:
+        st.success(f"""
+        **🤖 智能生成开发决策：**
+        1. **规格建议**：市场主流 Pack 数为 {data.groupby('Pack_Count')['clean_sales'].sum().idxmax()}。
+        2. **定价建议**：平均售价 ${data['clean_price'].mean():.2f}，建议起步价设定在 ${data['clean_price'].quantile(0.4):.2f} 以获取流量。
+        3. **核心成分**："{df_kw.iloc[0]['Keyword']}" 是当前销量最大的技术路线。
+        """)
+
+# =============================================================================
+# 4. 专属分析模块 B: 品牌格局模式 (Brand Mode)
+#    - 维度：垄断度、红海判断、品牌分层
+# =============================================================================
+def render_brand_dashboard(df):
+    st.success("检测到 [品牌汇总数据]，已加载 **品牌竞争格局面板**")
+    
+    all_cols = df.columns.tolist()
+    col_map = {
+        'brand': find_col(all_cols, ['brand', '品牌']),
+        'share': find_col(all_cols, ['share', '份额']),
+        'sales': find_col(all_cols, ['sales', '销量']),
+        'price': find_col(all_cols, ['price', '价格', '均价']),
+        'rev': find_col(all_cols, ['revenue', '销售额'])
+    }
+    
+    data = df.copy()
+    if col_map['share']: data['clean_share'] = data[col_map['share']].apply(clean_numeric)
+    if col_map['rev']: data['clean_rev'] = data[col_map['rev']].apply(clean_numeric)
+    if col_map['price']: data['clean_price'] = data[col_map['price']].apply(clean_numeric)
+    
+    # 排序
+    val_col = 'clean_rev' if col_map['rev'] else ('clean_share' if col_map['share'] else None)
+    if not val_col: st.error("无法分析：缺少份额或销售额列"); return
+    
+    data = data.sort_values(val_col, ascending=False)
+    
+    c1, c2, c3 = st.columns(3)
+    
+    # 1. 垄断度分析
+    top5_share = data.head(5)[val_col].sum()
+    total_share = data[val_col].sum()
+    cr5 = top5_share / total_share if total_share > 0 else 0
+    
+    with c1:
+        st.metric("CR5 (Top 5 集中度)", f"{cr5:.1%}")
+        if cr5 > 0.6: st.error("🔴 高度垄断 (红海)")
+        elif cr5 < 0.3: st.success("🟢 市场分散 (蓝海)")
+        else: st.warning("🟡 竞争适中")
+        
+    with c2:
+        st.metric("活跃品牌数", len(data))
+    
+    with c3:
+        if col_map['price']:
+            avg_p = data.head(20)['clean_price'].mean()
+            st.metric("头部品牌均价", f"${avg_p:.2f}")
+
+    st.divider()
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("品牌市场份额 Top 15")
+        fig = px.bar(data.head(15), x=val_col, y=col_map['brand'], orientation='h', title="头部玩家榜单")
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with col2:
+        st.subheader("品牌价格定位")
+        if col_map['price'] and col_map['rev']:
+            # 气泡图：价格 vs 规模
+            fig = px.scatter(data.head(30), x='clean_price', y='clean_rev', size='clean_rev', 
+                           hover_name=col_map['brand'], title="品牌定位: 价格 vs 规模")
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("👉 决策：避开大球（巨头），寻找价格空档。")
+
+# =============================================================================
+# 5. 专属分析模块 C: 渠道卖家模式 (Seller Mode)
+#    - 维度：卖家国籍、FBA占比、渠道掌控
+# =============================================================================
+def render_seller_dashboard(df):
+    st.warning("检测到 [卖家/渠道数据]，已加载 **渠道卖家分析面板**")
+    
+    all_cols = df.columns.tolist()
+    col_map = {
+        'seller': find_col(all_cols, ['seller', '卖家']),
+        'sales': find_col(all_cols, ['sales', '销量']),
+        'country': find_col(all_cols, ['country', 'region', '国家', '属地']),
+        'type': find_col(all_cols, ['type', '类型', 'fba']) # 比如 Buybox 类型
+    }
+    
+    data = df.copy()
+    if col_map['sales']: data['clean_sales'] = data[col_map['sales']].apply(clean_numeric)
+    
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.subheader("卖家销量分布 (Head vs Tail)")
+        if col_map['seller'] and 'clean_sales' in data:
+            top_sellers = data.sort_values('clean_sales', ascending=False).head(10)
+            fig = px.bar(top_sellers, x='clean_sales', y=col_map['seller'], orientation='h', title="Top 10 卖家销量")
+            st.plotly_chart(fig, use_container_width=True)
+            
+    with c2:
+        st.subheader("卖家属性分布")
+        if col_map['country']:
+            country_dist = data[col_map['country']].value_counts().reset_index()
+            fig = px.pie(country_dist, values='count', names=col_map['country'], title="卖家所属地分布")
+            st.plotly_chart(fig, use_container_width=True)
+        elif col_map['type']:
+             type_dist = data[col_map['type']].value_counts().reset_index()
+             fig = px.pie(type_dist, values='count', names=col_map['type'], title="配送方式 (FBA/FBM) 分布")
+             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("数据中缺少 [国家] 或 [配送方式] 列，无法展示属性分布。")
+
+    st.info("""
+    **📢 渠道洞察：**
+    如果 'Amazon' 出现在 Top 卖家，说明自营占比高，需避开正面硬刚。
+    如果 CN (China) 卖家占比高，说明该品类供应链在国内，成本竞争会很激烈。
+    """)
+
+# =============================================================================
+# 6. 主程序入口
+# =============================================================================
+st.sidebar.header("📂 1. 上传文件")
+uploaded_file = st.sidebar.file_uploader("上传 Excel (.xlsx) 或 CSV", type=['xlsx', 'csv'])
+
+if uploaded_file:
+    # 读取文件
+    dfs = {}
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            try: df = pd.read_csv(uploaded_file, encoding='utf-8')
+            except: 
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding='gbk')
+            dfs["Sheet1"] = df
+        else:
+            xl = pd.ExcelFile(uploaded_file)
+            for sheet in xl.sheet_names:
+                dfs[sheet] = pd.read_excel(uploaded_file, sheet_name=sheet)
+    except Exception as e:
+        st.error(f"读取失败: {e}")
+        st.stop()
+
+    # 渲染 Tabs
+    sheet_names = list(dfs.keys())
+    st.sidebar.success(f"成功读取 {len(sheet_names)} 个工作表")
+    
+    # 创建 Streamlit Tabs
+    tabs = st.tabs([f"📑 {name}" for name in sheet_names])
+    
+    for i, name in enumerate(sheet_names):
+        with tabs[i]:
+            df_active = dfs[name]
+            # 智能路由：判断模式
+            mode = detect_sheet_mode(df_active)
+            
+            st.markdown(f"#### 当前工作表: `{name}` | 识别模式: `{mode}`")
+            
+            if mode == "PRODUCT":
+                render_product_dashboard(df_active)
+            elif mode == "BRAND":
+                render_brand_dashboard(df_active)
+            elif mode == "SELLER":
+                render_seller_dashboard(df_active)
+            else:
+                st.warning("无法识别该表类型 (既不是产品，也不是品牌或卖家)。显示通用数据预览：")
+                st.dataframe(df_active.head(50))
+                
+else:
+    st.info("👈 请在左侧上传文件，系统将自动拆解分析。")# -*- coding: utf-8 -*-
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import re
+import numpy as np
+
 # -----------------------------------------------------------------------------
 # 1. 页面配置与业务逻辑字典
 # -----------------------------------------------------------------------------
@@ -343,3 +661,4 @@ if uploaded_file:
 
 else:
     st.info("👋 请先上传数据文件。本系统将帮助你从 0 到 1 完成产品定义。")
+

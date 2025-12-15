@@ -9,15 +9,12 @@ import numpy as np
 # =============================================================================
 # 1. 基础配置与通用函数
 # =============================================================================
-st.set_page_config(page_title="亚马逊全维分析 (稳定增强版)", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="亚马逊全维分析 (ID冲突修复版)", layout="wide", page_icon="🌍")
 
-st.title("🌍 亚马逊全维分析系统（稳定增强版）")
+st.title("🌍 亚马逊全维分析系统（ID冲突修复版）")
 st.markdown("""
-**系统说明：**
-本系统专为产品开发与市场分析设计，支持 **Pandas 2.0+** 环境。
-1. **智能路由**：自动识别产品表、品牌表、卖家表。
-2. **产品开发模式**：提供 SKU 结构、配方技术、价格锚点等 9 大维度深度分析。
-3. **供应链洞察**：自动识别卖家所属地 (CN/US/KR...)，判断供应链源头。
+**本次修复：**
+✅ **修复 StreamlitDuplicateElementId 错误**：为每个工作表的选择框添加了唯一 Key（基于 Sheet 名），彻底解决多表分析时的组件冲突问题。
 """)
 
 # --- 通用清洗函数 ---
@@ -98,8 +95,9 @@ def detect_sheet_mode(df):
 # =============================================================================
 # 3. PRODUCT 模块 (9大维度 + 供应链)
 # =============================================================================
-def render_product_dashboard(df):
-    st.info("📦 **产品开发模式** (含供应链分析)")
+# 关键修复：增加了 sheet_name 参数
+def render_product_dashboard(df, sheet_name):
+    st.info(f"📦 **产品开发模式** (来源表: {sheet_name})")
     all_cols = df.columns.tolist()
     
     # 1. 字段映射
@@ -116,24 +114,25 @@ def render_product_dashboard(df):
         "flavor": find_col(all_cols, ["flavor", "味", "口味", "variant"]),
     }
     
-    # 2. 映射修正面板
+    # 2. 映射修正面板 (关键修复：为每个 selectbox 增加了 key)
     with st.expander("🛠️ 字段映射设置 (如有误请修正)", expanded=False):
         cols = [None] + all_cols
         c1, c2, c3, c4 = st.columns(4)
-        col_map["title"] = c1.selectbox("标题 Title*", cols, index=cols.index(col_map["title"]) if col_map["title"] in cols else 0)
-        col_map["brand"] = c2.selectbox("品牌 Brand", cols, index=cols.index(col_map["brand"]) if col_map["brand"] in cols else 0)
-        col_map["country"] = c3.selectbox("卖家地 Country", cols, index=cols.index(col_map["country"]) if col_map["country"] in cols else 0)
-        col_map["price"] = c4.selectbox("价格 Price", cols, index=cols.index(col_map["price"]) if col_map["price"] in cols else 0)
+        # Key 格式：{sheet_name}_{field_name}_prod
+        col_map["title"] = c1.selectbox("标题 Title*", cols, index=cols.index(col_map["title"]) if col_map["title"] in cols else 0, key=f"{sheet_name}_title_prod")
+        col_map["brand"] = c2.selectbox("品牌 Brand", cols, index=cols.index(col_map["brand"]) if col_map["brand"] in cols else 0, key=f"{sheet_name}_brand_prod")
+        col_map["country"] = c3.selectbox("卖家地 Country", cols, index=cols.index(col_map["country"]) if col_map["country"] in cols else 0, key=f"{sheet_name}_country_prod")
+        col_map["price"] = c4.selectbox("价格 Price", cols, index=cols.index(col_map["price"]) if col_map["price"] in cols else 0, key=f"{sheet_name}_price_prod")
         
         c5, c6, c7, c8 = st.columns(4)
-        col_map["sales"] = c5.selectbox("销量 Sales", cols, index=cols.index(col_map["sales"]) if col_map["sales"] in cols else 0)
-        col_map["revenue"] = c6.selectbox("销售额 Revenue", cols, index=cols.index(col_map["revenue"]) if col_map["revenue"] in cols else 0)
-        col_map["rating"] = c7.selectbox("评分 Rating", cols, index=cols.index(col_map["rating"]) if col_map["rating"] in cols else 0)
-        col_map["reviews"] = c8.selectbox("评论数 Reviews", cols, index=cols.index(col_map["reviews"]) if col_map["reviews"] in cols else 0)
+        col_map["sales"] = c5.selectbox("销量 Sales", cols, index=cols.index(col_map["sales"]) if col_map["sales"] in cols else 0, key=f"{sheet_name}_sales_prod")
+        col_map["revenue"] = c6.selectbox("销售额 Revenue", cols, index=cols.index(col_map["revenue"]) if col_map["revenue"] in cols else 0, key=f"{sheet_name}_rev_prod")
+        col_map["rating"] = c7.selectbox("评分 Rating", cols, index=cols.index(col_map["rating"]) if col_map["rating"] in cols else 0, key=f"{sheet_name}_rating_prod")
+        col_map["reviews"] = c8.selectbox("评论数 Reviews", cols, index=cols.index(col_map["reviews"]) if col_map["reviews"] in cols else 0, key=f"{sheet_name}_reviews_prod")
         
         c9, c10 = st.columns(2)
-        col_map["size"] = c9.selectbox("规格 Size", cols, index=cols.index(col_map["size"]) if col_map["size"] in cols else 0)
-        col_map["flavor"] = c10.selectbox("口味 Flavor", cols, index=cols.index(col_map["flavor"]) if col_map["flavor"] in cols else 0)
+        col_map["size"] = c9.selectbox("规格 Size", cols, index=cols.index(col_map["size"]) if col_map["size"] in cols else 0, key=f"{sheet_name}_size_prod")
+        col_map["flavor"] = c10.selectbox("口味 Flavor", cols, index=cols.index(col_map["flavor"]) if col_map["flavor"] in cols else 0, key=f"{sheet_name}_flavor_prod")
 
     if not col_map["title"]:
         st.error("无法分析：必须包含【标题】列。")
@@ -234,7 +233,6 @@ def render_product_dashboard(df):
                 st.warning("未检测到卖家所属地列")
         with c2:
             if col_map["country"]:
-                # FIX: groupby mean without skipna
                 pb = data.groupby("Origin", dropna=False)["clean_price"].mean().reset_index()
                 st.plotly_chart(px.bar(pb, x="Origin", y="clean_price", title="不同产地均价", color="Origin"), use_container_width=True)
 
@@ -242,7 +240,6 @@ def render_product_dashboard(df):
     with tabs[1]:
         c1, c2 = st.columns(2)
         with c1:
-            # FIX: groupby sum without skipna
             pd_dist = data.groupby("Pack_Count")["clean_sales"].sum().reset_index()
             st.plotly_chart(px.bar(pd_dist, x="Pack_Count", y="clean_sales", title="Pack数分布(按销量)"), use_container_width=True)
         with c2:
@@ -260,7 +257,6 @@ def render_product_dashboard(df):
         with c2:
             # Tech Premium
             tmp = data.dropna(subset=["clean_price"])
-            # FIX: groupby mean without skipna
             tp = tmp.groupby("Tech_Main")["clean_price"].mean().sort_values(ascending=False).head(10).reset_index()
             st.plotly_chart(px.bar(tp, x="clean_price", y="Tech_Main", orientation='h', title="技术溢价分析"), use_container_width=True)
 
@@ -268,7 +264,6 @@ def render_product_dashboard(df):
     with tabs[3]:
         st.plotly_chart(px.histogram(data, x="clean_price", nbins=20, color="Origin", title="价格区间分布"), use_container_width=True)
         
-        # FIX: groupby size (safe)
         pb_cnt = data.groupby("Price_Band", dropna=False).size().reset_index(name="Count")
         st.plotly_chart(px.bar(pb_cnt, x="Price_Band", y="Count", title="价格带SKU数"), use_container_width=True)
 
@@ -289,7 +284,6 @@ def render_product_dashboard(df):
     with tabs[5]:
         st.subheader("🤖 智能开发建议")
         
-        # Logic
         multi_share = data[data["Is_Multipack"]]["clean_sales"].sum() / total_sales if total_sales>0 else 0
         cn_share = (data["Origin"].str.contains("CN")).mean()
         
@@ -300,7 +294,6 @@ def render_product_dashboard(df):
         4. **成熟度**: 得分 **{maturity_score}**。{'市场成熟，需强差异化' if maturity_score>60 else '市场早期，机会较大'}。
         """)
         
-        # Top Table
         if "clean_sales" in data.columns:
             st.markdown("#### Top 15 SKU 参考")
             top = data.sort_values("clean_sales", ascending=False).head(15)
@@ -309,15 +302,25 @@ def render_product_dashboard(df):
 # =============================================================================
 # 4. BRAND / SELLER 简易模块
 # =============================================================================
-def render_brand_dashboard(df):
-    st.info("🏢 **品牌格局模式**")
+# 关键修复：增加了 sheet_name 参数
+def render_brand_dashboard(df, sheet_name):
+    st.info(f"🏢 **品牌格局模式** (来源表: {sheet_name})")
     all_cols = df.columns.tolist()
     col_map = {
         "brand": find_col(all_cols, ["brand", "品牌"]),
         "share": find_col(all_cols, ["share", "份额"]),
-        "rev": find_col(all_cols, ["revenue", "销售额"]),
+        "rev": find_col(all_cols, ["revenue", "销售额", "gmv", "amount"]),
         "price": find_col(all_cols, ["price", "价格", "均价"])
     }
+    
+    # 关键修复：为每个 selectbox 增加了 key
+    with st.expander("🛠️ 字段映射设置 (品牌表)", expanded=False):
+        cols = [None] + all_cols
+        c1, c2, c3, c4 = st.columns(4)
+        col_map["brand"] = c1.selectbox("品牌 Brand*", cols, index=cols.index(col_map["brand"]) if col_map["brand"] in cols else 0, key=f"{sheet_name}_brand_b")
+        col_map["share"] = c2.selectbox("份额 Share", cols, index=cols.index(col_map["share"]) if col_map["share"] in cols else 0, key=f"{sheet_name}_share_b")
+        col_map["rev"] = c3.selectbox("销售额 Revenue", cols, index=cols.index(col_map["rev"]) if col_map["rev"] in cols else 0, key=f"{sheet_name}_rev_b")
+        col_map["price"] = c4.selectbox("均价 Price", cols, index=cols.index(col_map["price"]) if col_map["price"] in cols else 0, key=f"{sheet_name}_price_b")
     
     if not col_map["brand"] or not col_map["share"]:
         st.error("缺少品牌或份额列")
@@ -338,14 +341,23 @@ def render_brand_dashboard(df):
             data["clean_price"] = data[col_map["price"]].apply(clean_numeric)
             st.plotly_chart(px.bar(data.head(15), x=col_map["brand"], y="clean_price", title="品牌均价"), use_container_width=True)
 
-def render_seller_dashboard(df):
-    st.info("🏪 **卖家渠道模式**")
+# 关键修复：增加了 sheet_name 参数
+def render_seller_dashboard(df, sheet_name):
+    st.info(f"🏪 **卖家渠道模式** (来源表: {sheet_name})")
     all_cols = df.columns.tolist()
     col_map = {
         "seller": find_col(all_cols, ["seller", "卖家"]),
         "sales": find_col(all_cols, ["sales", "销量"]),
         "country": find_col(all_cols, ["country", "region", "所属地", "国家"]),
     }
+    
+    # 关键修复：为每个 selectbox 增加了 key
+    with st.expander("🛠️ 字段映射设置 (卖家表)", expanded=False):
+        cols = [None] + all_cols
+        c1, c2, c3 = st.columns(3)
+        col_map["seller"] = c1.selectbox("卖家 Seller*", cols, index=cols.index(col_map["seller"]) if col_map["seller"] in cols else 0, key=f"{sheet_name}_seller_s")
+        col_map["sales"] = c2.selectbox("销量 Sales", cols, index=cols.index(col_map["sales"]) if col_map["sales"] in cols else 0, key=f"{sheet_name}_sales_s")
+        col_map["country"] = c3.selectbox("所属地 Country/Region", cols, index=cols.index(col_map["country"]) if col_map["country"] in cols else 0, key=f"{sheet_name}_country_s")
     
     data = df.copy()
     if col_map["country"]:
@@ -390,9 +402,10 @@ if uploaded_file:
         with tabs[i]:
             mode = detect_sheet_mode(df)
             st.caption(f"模式: {mode}")
-            if mode == "PRODUCT": render_product_dashboard(df)
-            elif mode == "BRAND": render_brand_dashboard(df)
-            elif mode == "SELLER": render_seller_dashboard(df)
+            # 关键修复：传递了 name 作为 sheet_name
+            if mode == "PRODUCT": render_product_dashboard(df, name)
+            elif mode == "BRAND": render_brand_dashboard(df, name)
+            elif mode == "SELLER": render_seller_dashboard(df, name)
             else: st.dataframe(df.head())
 else:
     st.info("👈 请上传文件")

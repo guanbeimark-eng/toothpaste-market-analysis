@@ -3,167 +3,198 @@ import pandas as pd
 import plotly.express as px
 
 # -----------------------------------------------------------------------------
-# 1. 基础配置
+# 1. 页面配置
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="牙膏市场数据分析(诊断版)", layout="wide")
-st.title("🛠️ 牙膏市场分析 - 诊断模式")
+st.set_page_config(page_title="牙膏市场数据分析(Excel版)", layout="wide")
+st.title("🦷 牙膏市场分析 - Excel/CSV 通用版")
 st.markdown("""
 **使用说明：**
-1. 上传 CSV 文件。
-2. 如果系统没有自动识别出列，请在下方的“列名映射”区域手动选择对应的列。
-3. 图表会自动生成。
+1. 支持上传 **.xlsx** (Excel) 或 **.csv** 文件。
+2. 如果是 Excel 文件，系统会让你选择要读取的 **工作表 (Sheet)**。
+3. 随后请确认下方的列名映射是否正确。
 """)
 
 # -----------------------------------------------------------------------------
-# 2. 核心函数
+# 2. 核心数据加载函数
 # -----------------------------------------------------------------------------
-def load_data(file):
-    """尝试多种编码读取文件"""
-    encodings = ['utf-8', 'gbk', 'utf-8-sig', 'ISO-8859-1']
-    for enc in encodings:
+def load_file(uploaded_file):
+    """
+    智能读取文件：
+    - 如果是 CSV：尝试不同编码
+    - 如果是 XLSX：读取所有 Sheet 名称供用户选择
+    """
+    if uploaded_file is None:
+        return None, None, "没有文件"
+
+    file_name = uploaded_file.name
+    
+    # --- 处理 Excel 文件 ---
+    if file_name.endswith('.xlsx'):
         try:
-            # 尝试读取
-            df = pd.read_csv(file, encoding=enc)
-            # 清理列名空格
-            df.columns = df.columns.str.strip()
-            return df, None
-        except UnicodeDecodeError:
-            continue
+            xl = pd.ExcelFile(uploaded_file)
+            return "xlsx", xl, None
         except Exception as e:
-            return None, str(e)
-    return None, "无法识别文件编码，请尝试将文件另存为 UTF-8 格式的 CSV。"
+            return None, None, f"Excel 读取失败: {str(e)}"
+
+    # --- 处理 CSV 文件 ---
+    elif file_name.endswith('.csv'):
+        encodings = ['utf-8', 'gbk', 'utf-8-sig', 'ISO-8859-1']
+        for enc in encodings:
+            try:
+                uploaded_file.seek(0) # 重置指针
+                df = pd.read_csv(uploaded_file, encoding=enc)
+                df.columns = df.columns.str.strip() # 清理列名空格
+                return "csv", df, None
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                return None, None, str(e)
+        return None, None, "CSV 编码识别失败，请转存为 UTF-8 格式。"
+    
+    else:
+        return None, None, "不支持的文件格式，请上传 .csv 或 .xlsx"
 
 def clean_numeric(val):
     """强制转换为数字"""
     if pd.isna(val): return 0
     if isinstance(val, (int, float)): return val
     try:
-        # 去除货币符号、逗号、空格
-        clean_str = str(val).replace('$', '').replace('¥', '').replace(',', '').replace(' ', '')
+        clean_str = str(val).replace('$', '').replace('¥', '').replace(',', '').replace(' ', '').replace('%', '')
         return float(clean_str)
     except:
         return 0
 
-# -----------------------------------------------------------------------------
-# 3. 侧边栏：文件上传
-# -----------------------------------------------------------------------------
-st.sidebar.header("📂 文件上传")
-uploaded_us = st.sidebar.file_uploader("上传 US.csv (产品明细)", type=['csv'])
-uploaded_brand = st.sidebar.file_uploader("上传 Brands.csv (品牌汇总)", type=['csv'])
+def get_col_index(options, key_words):
+    """辅助函数：自动猜测列名的索引"""
+    for i, opt in enumerate(options):
+        for kw in key_words:
+            if kw in str(opt): return i
+    return 0
 
 # -----------------------------------------------------------------------------
-# 4. 模块一：产品分析 (US.csv)
+# 3. 侧边栏与主逻辑
 # -----------------------------------------------------------------------------
-st.header("1. 产品分析 (Product Analysis)")
 
-if uploaded_us:
-    df_us, error_msg = load_data(uploaded_us)
-    
-    if df_us is not None:
-        st.success(f"成功读取文件！包含 {len(df_us)} 行数据。")
-        
-        # --- 关键：列名映射选择器 ---
-        with st.expander("⚙️ 字段设置 (如果不显示图表，请点这里检查列名)", expanded=True):
-            st.info("系统会自动尝试匹配列名，如果不对，请手动修正。")
-            
-            # 获取所有列名
-            all_cols = df_us.columns.tolist()
-            
-            # 辅助函数：尝试找到默认值
-            def get_index(options, key_words):
-                for i, opt in enumerate(options):
-                    for kw in key_words:
-                        if kw in opt: return i
-                return 0
+# 定义两个分析模块
+MODULES = {
+    "product": "📦 产品明细分析 (对应 US 表)",
+    "brand": "🏢 品牌汇总分析 (对应 Brands 表)"
+}
 
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                c_price = st.selectbox("选择[价格]列", all_cols, index=get_index(all_cols, ['价格', 'Price']))
-            with col2:
-                c_sales = st.selectbox("选择[销量]列", all_cols, index=get_index(all_cols, ['销量', 'Sales']))
-            with col3:
-                c_rev = st.selectbox("选择[销售额]列", all_cols, index=get_index(all_cols, ['销售额', 'Revenue']))
-            with col4:
-                c_brand = st.selectbox("选择[品牌]列", all_cols, index=get_index(all_cols, ['品牌', 'Brand']))
+st.sidebar.header("1. 选择分析模式")
+analysis_mode = st.sidebar.radio("你想分析什么？", list(MODULES.values()))
 
-        # --- 数据处理 ---
-        try:
-            # 转换数据类型
-            df_us['clean_price'] = df_us[c_price].apply(clean_numeric)
-            df_us['clean_sales'] = df_us[c_sales].apply(clean_numeric)
-            df_us['clean_rev'] = df_us[c_rev].apply(clean_numeric)
-            
-            # 顶部指标
-            k1, k2, k3 = st.columns(3)
-            k1.metric("总销售额", f"${df_us['clean_rev'].sum():,.0f}")
-            k2.metric("总销量", f"{df_us['clean_sales'].sum():,.0f}")
-            k3.metric("平均价格", f"${df_us['clean_price'].mean():.2f}")
+st.sidebar.header("2. 上传文件")
+uploaded_file = st.sidebar.file_uploader("上传数据文件 (.xlsx / .csv)", type=['xlsx', 'csv'])
 
-            # 图表
-            c_chart1, c_chart2 = st.columns(2)
-            
-            with c_chart1:
-                st.subheader("价格分布")
-                fig1 = px.histogram(df_us, x='clean_price', nbins=20, title="产品价格区间")
-                st.plotly_chart(fig1, use_container_width=True)
-            
-            with c_chart2:
-                st.subheader("品牌销量 Top 10 (基于当前文件)")
-                # 简单的按品牌聚合
-                if c_brand:
-                    brand_agg = df_us.groupby(c_brand)['clean_sales'].sum().reset_index()
-                    brand_agg = brand_agg.sort_values('clean_sales', ascending=False).head(10)
-                    fig2 = px.bar(brand_agg, x=c_brand, y='clean_sales', title="品牌销量排行")
-                    st.plotly_chart(fig2, use_container_width=True)
-            
-            st.subheader("原始数据预览")
-            st.dataframe(df_us.head(5))
+# -----------------------------------------------------------------------------
+# 4. 分析逻辑
+# -----------------------------------------------------------------------------
 
-        except Exception as e:
-            st.error(f"数据处理时出错: {e}")
-            st.warning("请检查上方下拉框选中的列是否包含数字内容。")
+if uploaded_file:
+    file_type, data_obj, error = load_file(uploaded_file)
 
+    if error:
+        st.error(error)
     else:
-        st.error(f"读取文件失败: {error_msg}")
-else:
-    st.info("👈 请在左侧上传 US.csv")
-
-st.divider()
-
-# -----------------------------------------------------------------------------
-# 5. 模块二：品牌分析 (Brands.csv)
-# -----------------------------------------------------------------------------
-st.header("2. 品牌分析 (Brand Analysis)")
-
-if uploaded_brand:
-    df_brand, error_msg_b = load_data(uploaded_brand)
-    
-    if df_brand is not None:
-        st.success("成功读取品牌文件！")
+        # === 获取 DataFrame ===
+        df = None
         
-        with st.expander("⚙️ 品牌表字段设置", expanded=True):
-            b_cols = df_brand.columns.tolist()
+        if file_type == 'xlsx':
+            # Excel 需要选择 Sheet
+            sheet_names = data_obj.sheet_names
+            st.info(f"检测到 Excel 文件，包含以下工作表: {sheet_names}")
             
-            bc1, bc2 = st.columns(2)
-            with bc1:
-                b_name_col = st.selectbox("选择[品牌名称]列", b_cols, index=get_index(b_cols, ['品牌', 'Brand']))
-            with bc2:
-                b_rev_col = st.selectbox("选择[月销售额]列", b_cols, index=get_index(b_cols, ['销售额', 'Revenue']))
+            # 智能预选 Sheet
+            default_idx = 0
+            if "产品" in analysis_mode and "US" in sheet_names:
+                default_idx = sheet_names.index("US")
+            elif "品牌" in analysis_mode and "Brands" in sheet_names:
+                try: default_idx = sheet_names.index("Brands")
+                except: pass
+            
+            selected_sheet = st.selectbox("请选择要分析的数据表 (Sheet):", sheet_names, index=default_idx)
+            df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+            df.columns = df.columns.astype(str).str.strip() # 清理列名
+            
+        else:
+            # CSV 直接就是 DataFrame
+            df = data_obj
 
-        try:
-            df_brand['clean_rev'] = df_brand[b_rev_col].apply(clean_numeric)
-            
-            st.subheader("品牌市场份额")
-            top_brands = df_brand.sort_values('clean_rev', ascending=False).head(15)
-            fig_pie = px.pie(top_brands, values='clean_rev', names=b_name_col, hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-            st.subheader("数据明细")
-            st.dataframe(df_brand)
-            
-        except Exception as e:
-            st.error(f"生成图表出错: {e}")
-    else:
-        st.error(f"读取失败: {error_msg_b}")
+        # === 进入分析界面 ===
+        if df is not None:
+            st.divider()
+            st.subheader(f"正在分析: {analysis_mode}")
+            st.write(f"数据预览 (前3行):")
+            st.dataframe(df.head(3))
+
+            all_cols = df.columns.tolist()
+
+            # ==========================================
+            # 模式 A: 产品分析 (Product / US)
+            # ==========================================
+            if analysis_mode == MODULES["product"]:
+                with st.expander("⚙️ 设置数据列 (对应关系)", expanded=True):
+                    c1, c2, c3, c4 = st.columns(4)
+                    col_price = c1.selectbox("价格列", all_cols, index=get_col_index(all_cols, ['价格', 'Price']))
+                    col_sales = c2.selectbox("销量列", all_cols, index=get_col_index(all_cols, ['销量', 'Sales']))
+                    col_rev = c3.selectbox("销售额列", all_cols, index=get_col_index(all_cols, ['销售额', 'Revenue']))
+                    col_title = c4.selectbox("商品标题/名称列", all_cols, index=get_col_index(all_cols, ['标题', 'Name', 'Title']))
+
+                try:
+                    # 清洗数据
+                    df['_price'] = df[col_price].apply(clean_numeric)
+                    df['_sales'] = df[col_sales].apply(clean_numeric)
+                    df['_rev'] = df[col_rev].apply(clean_numeric)
+
+                    # 指标卡
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("总销售额", f"${df['_rev'].sum():,.0f}")
+                    m2.metric("总销量", f"{df['_sales'].sum():,.0f}")
+                    m3.metric("平均价格", f"${df['_price'].mean():.2f}")
+
+                    # 图表
+                    g1, g2 = st.columns(2)
+                    with g1:
+                        st.markdown("##### 价格分布")
+                        fig = px.histogram(df, x='_price', nbins=20, title="价格区间分布")
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with g2:
+                        st.markdown("##### 销量 Top 10 商品")
+                        top_items = df.sort_values('_sales', ascending=False).head(10)
+                        # 截断太长的标题
+                        top_items['_short_title'] = top_items[col_title].astype(str).str[:30] + "..."
+                        fig = px.bar(top_items, x='_sales', y='_short_title', orientation='h', title="热销商品")
+                        st.plotly_chart(fig, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"分析出错，请检查上方列名是否选择正确。\n错误信息: {e}")
+
+            # ==========================================
+            # 模式 B: 品牌分析 (Brand)
+            # ==========================================
+            elif analysis_mode == MODULES["brand"]:
+                with st.expander("⚙️ 设置数据列 (对应关系)", expanded=True):
+                    c1, c2 = st.columns(2)
+                    b_name = c1.selectbox("品牌名称列", all_cols, index=get_col_index(all_cols, ['品牌', 'Brand']))
+                    b_rev = c2.selectbox("销售额/占比列", all_cols, index=get_col_index(all_cols, ['销售额', 'Revenue', 'Share']))
+
+                try:
+                    df['_val'] = df[b_rev].apply(clean_numeric)
+                    
+                    st.markdown("##### 品牌市场占比")
+                    # 排序并取前15
+                    df_sorted = df.sort_values('_val', ascending=False).head(15)
+                    
+                    fig = px.pie(df_sorted, values='_val', names=b_name, title="Top 15 品牌占比", hole=0.4)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.markdown("##### 品牌数据明细")
+                    st.dataframe(df)
+
+                except Exception as e:
+                    st.error(f"分析出错，请检查上方列名是否选择正确。\n错误信息: {e}")
+
 else:
-    st.info("👈 请在左侧上传 Brands.csv")
+    st.info("👈 请在左侧侧边栏上传文件")

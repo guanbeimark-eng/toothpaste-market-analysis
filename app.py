@@ -1,175 +1,228 @@
 # -*- coding: utf-8 -*-
-import re
-import time
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import re
+import numpy as np
 
 # -----------------------------------------------------------------------------
-# 1. 页面与工具函数
+# 1. 页面配置
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="亚马逊数据分析(特调版)", layout="wide")
-st.title("📊 亚马逊市场分析 (针对你的文件优化版)")
+st.set_page_config(page_title="全景市场分析系统", layout="wide")
+st.title("📊 全景市场分析系统 (多工作表自动解析)")
+st.markdown("""
+**系统逻辑：**
+1. 自动读取 Excel 中的**每一个工作表 (Sheet)**。
+2. 针对每个 Sheet 独立识别列名并生成分析报告。
+3. 支持产品明细(`US`)、品牌汇总(`Brands`)、卖家汇总(`Sellers`)等多种数据格式。
+""")
 
+# -----------------------------------------------------------------------------
+# 2. 核心清洗函数
+# -----------------------------------------------------------------------------
 def clean_numeric(val):
-    """强力清洗函数：专门处理 '$12.99', '1,000', '评分数' 等格式"""
+    """超级清洗函数：处理货币、千分位、区间、百分比"""
     if pd.isna(val): return 0.0
     s = str(val).strip()
-    if s == "" or s.lower() == "nan": return 0.0
+    if s == "" or s.lower() in ["nan", "null"]: return 0.0
     
-    # 1. 针对你的文件：移除货币符号、逗号、空格
-    s = s.replace("$", "").replace("¥", "").replace(",", "").replace(" ", "")
+    # 移除常见干扰符
+    s = s.replace("$", "").replace("¥", "").replace(",", "").replace(" ", "").replace("￥", "")
     
-    # 2. 提取数字
+    # 处理百分比
+    if "%" in s:
+        try:
+            return float(s.replace("%", "")) / 100.0
+        except:
+            pass
+
+    # 提取数字
     nums = re.findall(r"\d+(?:\.\d+)?", s)
     if not nums: return 0.0
     
-    # 3. 处理区间 "10-20" -> 取平均
-    if len(nums) >= 2 and ("-" in str(val) or "to" in str(val)):
-        return (float(nums[0]) + float(nums[1])) / 2.0
-        
+    # 处理价格区间 "10-20" -> 取平均
+    if len(nums) >= 2 and ("-" in str(val) or "to" in str(val).lower()):
+        try:
+            return (float(nums[0]) + float(nums[1])) / 2.0
+        except:
+            pass
+            
     return float(nums[0])
 
-# -----------------------------------------------------------------------------
-# 2. 针对你文件的列名匹配逻辑
-# -----------------------------------------------------------------------------
 def find_col(columns, keywords):
-    """在列名中寻找关键词"""
+    """模糊匹配列名"""
     for col in columns:
         for kw in keywords:
-            # 忽略大小写和空格的精确匹配
-            if kw in str(col).replace(" ", ""):
+            # 移除符号和空格进行对比
+            clean_col = str(col).replace(" ", "").replace("(", "").replace(")", "").replace("$", "").lower()
+            clean_kw = kw.replace(" ", "").lower()
+            if clean_kw in clean_col:
                 return col
     return None
 
 # -----------------------------------------------------------------------------
-# 3. 主逻辑
+# 3. 单个工作表的分析逻辑
 # -----------------------------------------------------------------------------
-st.sidebar.header("📂 第一步：上传文件")
-uploaded_file = st.sidebar.file_uploader("上传 US.csv 或 Brands.csv", type=["xlsx", "csv"])
-
-if uploaded_file:
-    # --- 读取文件 ---
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            # 尝试多种编码防止乱码
-            try:
-                df = pd.read_csv(uploaded_file, encoding='utf-8')
-            except:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, encoding='gbk')
-        else:
-            df = pd.read_excel(uploaded_file)
-            
-        # 去除列名空格
-        df.columns = df.columns.astype(str).str.strip()
-        
-    except Exception as e:
-        st.error(f"文件读取失败: {e}")
-        st.stop()
-
-    st.success(f"成功读取 {len(df)} 行数据！正在进行分析...")
-
-    # --- 自动对应列名 (针对你的文件头) ---
+def analyze_sheet(df, sheet_name):
+    st.markdown(f"### 📑 工作表分析: {sheet_name}")
+    
+    # --- 1. 列名识别 ---
     all_cols = df.columns.tolist()
     
-    # 这里是你的文件里会出现的列名关键词
-    col_price = find_col(all_cols, ['价格', 'Price', '售价'])
-    col_sales = find_col(all_cols, ['销量', 'Sales', 'Sold'])
-    col_rev = find_col(all_cols, ['销售额', 'Revenue'])
-    col_rating = find_col(all_cols, ['评分', 'Rating', 'Stars'])      # 注意：Rating 是分数 (4.5)
-    col_reviews = find_col(all_cols, ['评分数', 'Reviews', '评论数', 'Q&A']) # 注意：Reviews 是数量 (1000)
-    col_brand = find_col(all_cols, ['品牌', 'Brand'])
-    col_title = find_col(all_cols, ['标题', 'Title', 'Name'])
+    # 关键词库 (针对你的三个表：US, Brands, Sellers)
+    col_map = {
+        "brand": find_col(all_cols, ['品牌', 'Brand', '卖家', 'Seller', 'Manufacturer']), # 兼容卖家表
+        "title": find_col(all_cols, ['标题', 'Title', 'Name', '商品名']),
+        "price": find_col(all_cols, ['价格', 'Price', '售价', '均价']),
+        "sales": find_col(all_cols, ['销量', 'Sales', 'Sold']),
+        "revenue": find_col(all_cols, ['销售额', 'Revenue', 'Amount']),
+        "rating": find_col(all_cols, ['评分', 'Rating', 'Stars']), # 分数
+        "reviews": find_col(all_cols, ['评分数', 'Reviews', '评论数', 'Q&A']), # 数量
+        "share": find_col(all_cols, ['市场份额', 'Share'])
+    }
+    
+    # --- 2. 手动修正 (折叠起来，默认信任自动识别) ---
+    with st.expander(f"🛠️ 字段映射设置 ({sheet_name}) - 识别不准点这里", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        # 生成唯一的 key 防止组件冲突
+        k_prefix = f"{sheet_name}_"
+        col_map["brand"] = c1.selectbox("品牌/卖家列", [None]+all_cols, index=all_cols.index(col_map["brand"])+1 if col_map["brand"] else 0, key=k_prefix+"br")
+        col_map["price"] = c2.selectbox("价格列", [None]+all_cols, index=all_cols.index(col_map["price"])+1 if col_map["price"] else 0, key=k_prefix+"pr")
+        col_map["sales"] = c3.selectbox("销量列", [None]+all_cols, index=all_cols.index(col_map["sales"])+1 if col_map["sales"] else 0, key=k_prefix+"sa")
+        col_map["rating"] = c4.selectbox("评分/星级列", [None]+all_cols, index=all_cols.index(col_map["rating"])+1 if col_map["rating"] else 0, key=k_prefix+"ra")
 
-    # --- 侧边栏：手动修正 (如果自动没对上) ---
-    with st.sidebar.expander("⚙️ 字段手动修正 (图表为空请点这里)", expanded=True):
-        st.info("系统已自动猜测列名，请确认是否正确：")
-        c_p = st.selectbox("价格列", [None] + all_cols, index=all_cols.index(col_price) + 1 if col_price else 0)
-        c_s = st.selectbox("销量列", [None] + all_cols, index=all_cols.index(col_sales) + 1 if col_sales else 0)
-        c_r = st.selectbox("评分列 (分数)", [None] + all_cols, index=all_cols.index(col_rating) + 1 if col_rating else 0)
-        c_v = st.selectbox("评论数列 (数量)", [None] + all_cols, index=all_cols.index(col_reviews) + 1 if col_reviews else 0)
-        c_b = st.selectbox("品牌列", [None] + all_cols, index=all_cols.index(col_brand) + 1 if col_brand else 0)
-
-    # --- 数据清洗 ---
+    # --- 3. 数据清洗 ---
     data = df.copy()
+    valid_data = True
     
-    # 必须有价格和销量才能画基础图
-    if c_p and c_s:
-        data['clean_price'] = data[c_p].apply(clean_numeric)
-        data['clean_sales'] = data[c_s].apply(clean_numeric)
-    else:
-        st.error("❌ 无法找到[价格]或[销量]列，无法生成图表。请在侧边栏手动选择。")
-        st.stop()
-        
-    # 如果有评分数据
-    if c_r: data['clean_rating'] = data[c_r].apply(clean_numeric)
-    if c_v: data['clean_reviews'] = data[c_v].apply(clean_numeric)
+    # 必须有 [品牌/卖家] 或者 [标题] 其中之一，且必须有 [销量] 或 [价格] 其中之一，否则没法分析
+    if not (col_map["brand"] or col_map["title"]):
+        st.warning(f"⚠️ {sheet_name}: 未找到‘品牌’或‘标题’列，跳过图表生成。")
+        valid_data = False
     
-    # --- 顶部 KPI ---
-    k1, k2, k3, k4 = st.columns(4)
-    total_sales = data['clean_sales'].sum()
-    avg_price = data['clean_price'].replace(0, np.nan).mean()
-    
-    k1.metric("总销量", f"{total_sales:,.0f}")
-    k2.metric("平均价格", f"${avg_price:.2f}")
-    
-    if c_r and 'clean_rating' in data:
-        k3.metric("平均评分", f"{data['clean_rating'].replace(0, np.nan).mean():.1f} ⭐")
-    
-    st.divider()
+    if valid_data:
+        # 清洗数值列
+        if col_map["price"]: data['clean_price'] = data[col_map["price"]].apply(clean_numeric)
+        if col_map["sales"]: data['clean_sales'] = data[col_map["sales"]].apply(clean_numeric)
+        if col_map["revenue"]: data['clean_revenue'] = data[col_map["revenue"]].apply(clean_numeric)
+        if col_map["rating"]: data['clean_rating'] = data[col_map["rating"]].apply(clean_numeric)
+        if col_map["reviews"]: data['clean_reviews'] = data[col_map["reviews"]].apply(clean_numeric)
 
-    # --- 图表区域 1: 价格分布 (最稳的图) ---
-    st.subheader("1. 价格分布分析")
-    # 过滤掉价格为0的数据，避免图表错误
-    valid_price_data = data[data['clean_price'] > 0]
-    
-    if len(valid_price_data) > 0:
-        fig1 = px.histogram(valid_price_data, x='clean_price', nbins=20, title="产品价格区间分布")
-        st.plotly_chart(fig1, use_container_width=True)
-    else:
-        st.warning("⚠️ 价格列全是 0 或空值，无法画图。请检查侧边栏是否选对了‘价格’列。")
+        # 这里的 Entity 代表分析的主体（可能是品牌，可能是卖家，可能是产品标题）
+        entity_col = col_map["brand"] if col_map["brand"] else col_map["title"]
+        data['Entity'] = data[entity_col].astype(str).fillna("Unknown")
 
-    # --- 图表 2: 机会矩阵 (最容易空的图) ---
-    st.subheader("2. 市场机会矩阵 (销量 vs 评分)")
-    
-    # 只有当 评分、评论数、销量 都有的时候，才能画这个图
-    if c_r and c_v and 'clean_rating' in data and 'clean_reviews' in data:
-        # 过滤数据
-        scatter_data = data[
-            (data['clean_sales'] > 0) & 
-            (data['clean_rating'] > 0)
-        ]
+        # --- 4. 关键指标卡 (KPI) ---
+        k1, k2, k3, k4 = st.columns(4)
         
-        if len(scatter_data) > 0:
-            fig2 = px.scatter(
-                scatter_data,
-                x="clean_rating",
-                y="clean_sales",
-                size="clean_price", # 气泡大小
-                color="clean_rating",
-                hover_data=[c_b] if c_b else None, # 悬停显示品牌
-                title="评分 vs 销量 (气泡越大价格越高)",
-                labels={"clean_rating": "评分", "clean_sales": "月销量"}
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-            st.caption("💡 气泡越靠右上方，说明销量高且评价好（明星产品）。")
+        total_sales = data['clean_sales'].sum() if 'clean_sales' in data else 0
+        avg_price = data['clean_price'].mean() if 'clean_price' in data else 0
+        total_rev = data['clean_revenue'].sum() if 'clean_revenue' in data else 0
+        
+        k1.metric("总销量", f"{total_sales:,.0f}")
+        k2.metric("平均价格", f"${avg_price:.2f}")
+        if total_rev > 0:
+            k3.metric("总销售额", f"${total_rev:,.0f}")
         else:
-            st.warning("⚠️ 数据不足：没有同时包含有效[销量]和[评分]的数据行，无法生成散点图。")
-    else:
-        st.info("ℹ️ 此图表需要[评分]和[评论数]数据。如果你上传的是 Brands.csv，通常没有评分数据，所以此图不显示是正常的。")
+            # 如果没有直接的销售额列，尝试 销量*价格 计算
+            if 'clean_sales' in data and 'clean_price' in data:
+                 est_rev = (data['clean_sales'] * data['clean_price']).sum()
+                 k3.metric("预估销售额", f"${est_rev:,.0f}")
+        
+        if 'clean_rating' in data:
+            avg_rate = data[data['clean_rating']>0]['clean_rating'].mean()
+            k4.metric("平均评分", f"{avg_rate:.2f} ⭐")
 
-    # --- 图表 3: 品牌份额 ---
-    if c_b:
-        st.subheader("3. 品牌销量排行")
-        brand_agg = data.groupby(c_b)['clean_sales'].sum().sort_values(ascending=False).head(15).reset_index()
-        fig3 = px.bar(brand_agg, x=c_b, y='clean_sales', title="Top 15 品牌销量")
-        st.plotly_chart(fig3, use_container_width=True)
+        st.divider()
 
-    # --- 数据预览 ---
-    with st.expander("查看原始数据 (用于排查问题)"):
-        st.dataframe(data.head(50))
+        # --- 5. 图表生成 ---
+        g1, g2 = st.columns(2)
+        
+        # 图表 A: 头部实体份额 (Top Brands/Sellers)
+        with g1:
+            if 'clean_sales' in data:
+                st.subheader(f"🏆 Top 10 {col_map['brand'] if col_map['brand'] else '商品'} (按销量)")
+                top_entities = data.groupby('Entity')['clean_sales'].sum().sort_values(ascending=False).head(10).reset_index()
+                fig_bar = px.bar(top_entities, x='clean_sales', y='Entity', orientation='h', text_auto='.2s')
+                st.plotly_chart(fig_bar, use_container_width=True)
+            elif col_map['share']:
+                # 如果只有市场份额列
+                st.subheader("🏆 市场份额分布")
+                # 清洗份额
+                data['clean_share'] = data[col_map['share']].apply(clean_numeric)
+                top_share = data.sort_values('clean_share', ascending=False).head(10)
+                fig_pie = px.pie(top_share, values='clean_share', names='Entity')
+                st.plotly_chart(fig_pie, use_container_width=True)
 
+        # 图表 B: 价格分布
+        with g2:
+            if 'clean_price' in data:
+                st.subheader("💰 价格区间分布")
+                # 过滤掉异常值
+                plot_data = data[(data['clean_price'] > 0) & (data['clean_price'] < 500)] 
+                fig_hist = px.histogram(plot_data, x='clean_price', nbins=20, color_discrete_sequence=['#3366cc'])
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+        # 图表 C: 气泡图 (仅当有评分和销量时)
+        if 'clean_rating' in data and 'clean_sales' in data and 'clean_price' in data:
+            st.subheader("🔎 机会探测矩阵 (销量 vs 评分)")
+            # 过滤
+            scatter_df = data[(data['clean_sales']>0) & (data['clean_rating']>0)]
+            if len(scatter_df) > 0:
+                fig_scat = px.scatter(
+                    scatter_df, 
+                    x='clean_rating', 
+                    y='clean_sales', 
+                    size='clean_price', 
+                    color='clean_rating',
+                    hover_name='Entity',
+                    title="气泡大小 = 价格",
+                    labels={'clean_rating': '评分', 'clean_sales': '月销量'}
+                )
+                st.plotly_chart(fig_scat, use_container_width=True)
+                st.info("💡 分析提示：寻找右下角的点（评分高但销量还不大）作为潜力竞品，或左上角的点（销量大但评分低）作为改进机会。")
+
+    with st.expander(f"查看 {sheet_name} 原始数据"):
+        st.dataframe(df.head(50))
+
+# -----------------------------------------------------------------------------
+# 4. 主程序入口
+# -----------------------------------------------------------------------------
+st.sidebar.header("📂 文件上传")
+uploaded_file = st.sidebar.file_uploader("上传 Excel (.xlsx) 或 CSV", type=['xlsx', 'csv'])
+
+if uploaded_file:
+    try:
+        # 读取文件
+        dfs = {}
+        if uploaded_file.name.endswith('.csv'):
+            # CSV 当作单个 Sheet
+            try:
+                dfs['Sheet1'] = pd.read_csv(uploaded_file, encoding='utf-8')
+            except:
+                uploaded_file.seek(0)
+                dfs['Sheet1'] = pd.read_csv(uploaded_file, encoding='gbk')
+        else:
+            # Excel 读取所有 Sheet
+            xl = pd.ExcelFile(uploaded_file)
+            for sheet_name in xl.sheet_names:
+                dfs[sheet_name] = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+                # 清理列名空格
+                dfs[sheet_name].columns = dfs[sheet_name].columns.astype(str).str.strip()
+
+        # 生成 Tabs
+        sheet_names = list(dfs.keys())
+        st.success(f"成功读取 {len(sheet_names)} 个工作表: {', '.join(sheet_names)}")
+        
+        # 创建 Tabs
+        tabs = st.tabs([f"📊 {name}" for name in sheet_names])
+        
+        for i, name in enumerate(sheet_names):
+            with tabs[i]:
+                analyze_sheet(dfs[name], name)
+                
+    except Exception as e:
+        st.error(f"文件读取严重错误: {e}")
 else:
-    st.info("👈 请在左侧上传文件")
+    st.info("👈 请在左侧上传文件开始分析")
